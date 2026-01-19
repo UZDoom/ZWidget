@@ -7,6 +7,9 @@
 #include <vector>
 #include <dwmapi.h>
 
+#define DIRECTINPUT_VERSION 0x0800
+#include <dinput.h>
+
 #pragma comment(lib, "dwmapi.lib")
 
 #ifndef HID_USAGE_PAGE_GENERIC
@@ -23,6 +26,10 @@
 
 #ifndef HID_USAGE_GENERIC_GAMEPAD
 #define HID_USAGE_GENERIC_GAMEPAD	((USHORT) 0x05)
+#endif
+
+#ifndef HID_USAGE_GENERIC_KEYBOARD
+#define HID_USAGE_GENERIC_KEYBOARD	((USHORT) 0x06)
 #endif
 
 #ifndef RIDEV_INPUTSINK
@@ -88,6 +95,8 @@ Win32DisplayWindow::Win32DisplayWindow(DisplayWindowHost* windowHost, bool popup
 	classdesc.style = CS_VREDRAW | CS_HREDRAW | CS_DBLCLKS;
 	classdesc.lpszClassName = L"ZWidgetWindow";
 	classdesc.lpfnWndProc = &Win32DisplayWindow::WndProc;
+	if (renderAPI != RenderAPI::Unspecified && renderAPI != RenderAPI::Bitmap)
+		classdesc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH); // Use a black initial color for the window if not using GDI bitmap painting
 	RegisterClassEx(&classdesc);
 
 	// Microsoft logic at its finest:
@@ -119,9 +128,9 @@ Win32DisplayWindow::~Win32DisplayWindow()
 	}
 
 	if (SmallIcon)
-		DestroyCursor(SmallIcon);
+		DestroyIcon(SmallIcon);
 	if (LargeIcon)
-		DestroyCursor(LargeIcon);
+		DestroyIcon(LargeIcon);
 
 	Windows.erase(WindowsIterator);
 }
@@ -131,7 +140,7 @@ void Win32DisplayWindow::SetWindowTitle(const std::string& text)
 	SetWindowText(WindowHandle.hwnd, to_utf16(text).c_str());
 }
 
-static HICON CreateIconFromImageList(HDC hdc, const std::vector<std::shared_ptr<Image>>& images, int desiredSize)
+static HICON CreateIconFromImageList(const std::vector<std::shared_ptr<Image>>& images, int desiredSize)
 {
 	if (images.empty())
 		return 0;
@@ -147,13 +156,32 @@ static HICON CreateIconFromImageList(HDC hdc, const std::vector<std::shared_ptr<
 
 	int width = image->GetWidth();
 	int height = image->GetHeight();
-	std::vector<uint32_t> pixels(width * height * 4);
+	uint32_t* pixels = nullptr;
+
+	HDC hdc = CreateCompatibleDC(0);
+	if (!hdc)
+		return 0;
+
+	BITMAPV5HEADER bmp_header = {};
+	bmp_header.bV5Size = sizeof(BITMAPV5HEADER);
+	bmp_header.bV5Width = width;
+	bmp_header.bV5Height = height;
+	bmp_header.bV5Planes = 1;
+	bmp_header.bV5BitCount = 32;
+	bmp_header.bV5Compression = BI_RGB;
+
+	HBITMAP bitmap = CreateDIBSection(hdc, (BITMAPINFO*)&bmp_header, DIB_RGB_COLORS, (void**)&pixels, 0, 0);
+	if (!bitmap)
+	{
+		DeleteDC(hdc);
+		return 0;
+	}
 
 	if (image->GetFormat() == ImageFormat::R8G8B8A8)
 	{
 		int count = width * height;
 		const uint32_t* src = (const uint32_t*)image->GetData();
-		uint32_t* dest = pixels.data();
+		uint32_t* dest = pixels;
 		for (int i = 0; i < count; i++)
 		{
 			uint32_t r = src[i] & 0xff;
@@ -165,24 +193,14 @@ static HICON CreateIconFromImageList(HDC hdc, const std::vector<std::shared_ptr<
 	}
 	else if (image->GetFormat() == ImageFormat::B8G8R8A8)
 	{
-		memcpy(pixels.data(), image->GetData(), width * height * 4);
+		memcpy(pixels, image->GetData(), width * height * 4);
 	}
 	else
 	{
+		DeleteObject(bitmap);
+		DeleteDC(hdc);
 		return 0;
 	}
-
-	BITMAPV5HEADER bmp_header = {};
-	bmp_header.bV5Size = sizeof(BITMAPV5HEADER);
-	bmp_header.bV5Width = width;
-	bmp_header.bV5Height = height;
-	bmp_header.bV5Planes = 1;
-	bmp_header.bV5BitCount = 32;
-	bmp_header.bV5Compression = BI_RGB;
-
-	HBITMAP bitmap = CreateDIBitmap(hdc, (BITMAPINFOHEADER*)&bmp_header, CBM_INIT, pixels.data(), (BITMAPINFO*)&bmp_header, DIB_RGB_COLORS);
-	if (!bitmap)
-		return 0;
 
 	ICONINFO iconinfo = {};
 	iconinfo.fIcon = TRUE;
@@ -190,6 +208,7 @@ static HICON CreateIconFromImageList(HDC hdc, const std::vector<std::shared_ptr<
 	iconinfo.hbmMask = bitmap;
 	HICON icon = CreateIconIndirect(&iconinfo);
 	DeleteObject(bitmap);
+	DeleteDC(hdc);
 	return icon;
 }
 
@@ -199,22 +218,17 @@ void Win32DisplayWindow::SetWindowIcon(const std::vector<std::shared_ptr<Image>>
 
 	if (SmallIcon)
 	{
-		DestroyCursor(SmallIcon);
+		DestroyIcon(SmallIcon);
 		SmallIcon = {};
 	}
 	if (LargeIcon)
 	{
-		DestroyCursor(LargeIcon);
+		DestroyIcon(LargeIcon);
 		LargeIcon = {};
 	}
 
-	HDC hdc = GetDC(WindowHandle.hwnd);
-	if (hdc)
-	{
-		SmallIcon = CreateIconFromImageList(hdc, images, (int)std::round(16 * dpiScale));
-		LargeIcon = CreateIconFromImageList(hdc, images, (int)std::round(32 * dpiScale));
-		ReleaseDC(WindowHandle.hwnd, hdc);
-	}
+	SmallIcon = CreateIconFromImageList(images, (int)std::round(16 * dpiScale));
+	LargeIcon = CreateIconFromImageList(images, (int)std::round(32 * dpiScale));
 
 	SendMessage(WindowHandle.hwnd, WM_SETICON, ICON_SMALL, (LPARAM)SmallIcon);
 	SendMessage(WindowHandle.hwnd, WM_SETICON, ICON_BIG, (LPARAM)LargeIcon);
@@ -317,6 +331,37 @@ void Win32DisplayWindow::Activate()
 
 void Win32DisplayWindow::ShowCursor(bool enable)
 {
+	::ShowCursor(enable ? TRUE : FALSE);
+}
+
+void Win32DisplayWindow::LockKeyboard()
+{
+	if (!KeyboardLocked)
+	{
+		KeyboardLocked = true;
+
+		RAWINPUTDEVICE rid = {};
+		rid.usUsagePage = HID_USAGE_PAGE_GENERIC;
+		rid.usUsage = HID_USAGE_GENERIC_KEYBOARD;
+		rid.dwFlags = RIDEV_INPUTSINK;
+		rid.hwndTarget = WindowHandle.hwnd;
+		RegisterRawInputDevices(&rid, 1, sizeof(RAWINPUTDEVICE));
+	}
+}
+
+void Win32DisplayWindow::UnlockKeyboard()
+{
+	if (KeyboardLocked)
+	{
+		RAWINPUTDEVICE rid;
+		rid.usUsagePage = HID_USAGE_PAGE_GENERIC;
+		rid.usUsage = HID_USAGE_GENERIC_KEYBOARD;
+		rid.dwFlags = RIDEV_REMOVE;
+		rid.hwndTarget = 0;
+		RegisterRawInputDevices(&rid, 1, sizeof(RAWINPUTDEVICE));
+
+		KeyboardLocked = false;
+	}
 }
 
 void Win32DisplayWindow::LockCursor()
@@ -325,7 +370,8 @@ void Win32DisplayWindow::LockCursor()
 	{
 		MouseLocked = true;
 		GetCursorPos(&MouseLockPos);
-		::ShowCursor(FALSE);
+		if (GetFocus() == WindowHandle.hwnd)
+			::ShowCursor(FALSE);
 
 		RAWINPUTDEVICE rid = {};
 		rid.usUsagePage = HID_USAGE_PAGE_GENERIC;
@@ -348,8 +394,11 @@ void Win32DisplayWindow::UnlockCursor()
 		RegisterRawInputDevices(&rid, 1, sizeof(rid));
 
 		MouseLocked = false;
-		SetCursorPos(MouseLockPos.x, MouseLockPos.y);
-		::ShowCursor(TRUE);
+		if (GetFocus() == WindowHandle.hwnd)
+		{
+			SetCursorPos(MouseLockPos.x, MouseLockPos.y);
+			::ShowCursor(TRUE);
+		}
 	}
 }
 
@@ -373,11 +422,13 @@ bool Win32DisplayWindow::GetKeyState(InputKey key)
 	return ::GetKeyState((int)key) & 0x8000; // High bit (0x8000) means key is down, Low bit (0x0001) means key is sticky on (like Caps Lock, Num Lock, etc.)
 }
 
-void Win32DisplayWindow::SetCursor(StandardCursor cursor)
+void Win32DisplayWindow::SetCursor(StandardCursor cursor, std::shared_ptr<CustomCursor> custom)
 {
-	if (cursor != CurrentCursor)
+	if (cursor != CurrentCursor || custom != CurrentCustomCursor)
 	{
 		CurrentCursor = cursor;
+		CurrentCustomCursor = custom;
+		CurrentWin32CustomCursor.reset();
 		UpdateCursor();
 	}
 }
@@ -531,6 +582,104 @@ void Win32DisplayWindow::PresentBitmap(int width, int height, const uint32_t* pi
 	}
 }
 
+RawKeycode Win32DisplayWindow::ToDirectInputKeycode(RAWINPUT* raw)
+{
+	// Convert scan codes to DirectInput key codes. For the most part, this is
+	// straight forward: Scan codes without any prefix are passed unmodified.
+	// Scan codes with an 0xE0 prefix byte are generally passed by ORing them
+	// with 0x80. And scan codes with an 0xE1 prefix are the annoying Pause key
+	// which will generate another scan code that looks like Num Lock.
+	//
+	// This is a bit complicated only because the state of PC key codes is a bit
+	// of a mess. Keyboards may use simpler codes internally, but for the sake
+	// of compatibility, programs are presented with XT-compatible codes. This
+	// means that keys which were originally a shifted form of another key and
+	// were split off into a separate key all their own, or which were formerly
+	// a separate key and are now part of another key (most notable PrtScn and
+	// SysRq), will still generate code sequences that XT-era software will
+	// still perceive as the original sequences to use those keys.
+
+	if (raw->header.dwType != RIM_TYPEKEYBOARD)
+	{
+		return RawKeycode::None;
+	}
+	int keycode = raw->data.keyboard.MakeCode;
+	if (keycode == 0 && (raw->data.keyboard.Flags & RI_KEY_E0))
+	{
+		// Even if the make code is 0, we might still be able to extract a useful key from the message.
+		if (raw->data.keyboard.VKey >= VK_BROWSER_BACK && raw->data.keyboard.VKey <= VK_LAUNCH_APP2)
+		{
+			static const uint8_t MediaKeys[VK_LAUNCH_APP2 - VK_BROWSER_BACK + 1] =
+			{
+				DIK_WEBBACK, DIK_WEBFORWARD, DIK_WEBREFRESH, DIK_WEBSTOP,
+				DIK_WEBSEARCH, DIK_WEBFAVORITES, DIK_WEBHOME,
+
+				DIK_MUTE, DIK_VOLUMEDOWN, DIK_VOLUMEUP,
+				DIK_NEXTTRACK, DIK_PREVTRACK, DIK_MEDIASTOP, DIK_PLAYPAUSE,
+
+				DIK_MAIL, DIK_MEDIASELECT, DIK_MYCOMPUTER, DIK_CALCULATOR
+			};
+			keycode = MediaKeys[raw->data.keyboard.VKey - VK_BROWSER_BACK];
+		}
+	}
+	if (keycode < 1 || keycode > 0xFF)
+	{
+		return RawKeycode::None;
+	}
+	if (raw->data.keyboard.Flags & RI_KEY_E1)
+	{
+		E1Prefix = raw->data.keyboard.MakeCode;
+		return RawKeycode::None;
+	}
+	if (raw->data.keyboard.Flags & RI_KEY_E0)
+	{
+		if (keycode == DIK_LSHIFT || keycode == DIK_RSHIFT)
+		{
+			// Ignore fake shifts.
+			return RawKeycode::None;
+		}
+		keycode |= 0x80;
+	}
+	// The sequence for an unshifted pause is E1 1D 45 (E1 Prefix +
+	// Control + Num Lock).
+	if (E1Prefix)
+	{
+		if (E1Prefix == 0x1D && keycode == DIK_NUMLOCK)
+		{
+			keycode = DIK_PAUSE;
+			E1Prefix = 0;
+		}
+		else
+		{
+			E1Prefix = 0;
+			return RawKeycode::None;
+		}
+	}
+	// If you press Ctrl+Pause, the keyboard sends the Break make code
+	// E0 46 instead of the Pause make code.
+	if (keycode == 0xC6)
+	{
+		keycode = DIK_PAUSE;
+	}
+	// If you press Ctrl+PrtScn (to get SysRq), the keyboard sends
+	// the make code E0 37. If you press PrtScn without any modifiers,
+	// it sends E0 2A E0 37. And if you press Alt+PrtScn, it sends 54
+	// (which is undefined in the charts I can find.)
+	if (keycode == 0x54)
+	{
+		keycode = DIK_SYSRQ;
+	}
+	// If you press any keys in the island between the main keyboard
+	// and the numeric keypad with Num Lock turned on, they generate
+	// a fake shift before their actual codes. They do not generate this
+	// fake shift if Num Lock is off. We unconditionally discard fake
+	// shifts above, so we don't need to do anything special for these,
+	// since they are also prefixed by E0 so we can tell them apart from
+	// their keypad counterparts.
+
+	return (RawKeycode)keycode;
+}
+
 LRESULT Win32DisplayWindow::OnWindowMessage(UINT msg, WPARAM wparam, LPARAM lparam)
 {
 	LPARAM result = 0;
@@ -539,7 +688,7 @@ LRESULT Win32DisplayWindow::OnWindowMessage(UINT msg, WPARAM wparam, LPARAM lpar
 
 	if (msg == WM_INPUT)
 	{
-		bool hasFocus = GetFocus() != 0;
+		bool hasFocus = GetFocus() == WindowHandle.hwnd;
 
 		HRAWINPUT handle = (HRAWINPUT)lparam;
 		UINT size = 0;
@@ -549,13 +698,21 @@ LRESULT Win32DisplayWindow::OnWindowMessage(UINT msg, WPARAM wparam, LPARAM lpar
 			size *= 2;
 			std::vector<uint8_t*> buffer(size);
 			result = GetRawInputData(handle, RID_INPUT, buffer.data(), &size, sizeof(RAWINPUTHEADER));
-			if (result >= 0)
+			if (result >= 0 && hasFocus)
 			{
 				RAWINPUT* rawinput = (RAWINPUT*)buffer.data();
 				if (rawinput->header.dwType == RIM_TYPEMOUSE)
 				{
-					if (hasFocus)
-						WindowHost->OnWindowRawMouseMove(rawinput->data.mouse.lLastX, rawinput->data.mouse.lLastY);
+					WindowHost->OnWindowRawMouseMove(rawinput->data.mouse.lLastX, rawinput->data.mouse.lLastY);
+				}
+				else if (rawinput->header.dwType == RIM_TYPEKEYBOARD)
+				{
+					RawKeycode keycode = ToDirectInputKeycode(rawinput);
+					if (keycode != RawKeycode::None)
+					{
+						bool keyDown = !(rawinput->data.keyboard.Flags & RI_KEY_BREAK);
+						WindowHost->OnWindowRawKey((RawKeycode)keycode, keyDown);
+					}
 				}
 			}
 		}
@@ -695,6 +852,22 @@ LRESULT Win32DisplayWindow::OnWindowMessage(UINT msg, WPARAM wparam, LPARAM lpar
 			::ShowCursor(TRUE);
 		}
 	}
+	else if (msg == WM_GETICON)
+	{
+		// Windows 11 2025H2 Disaster Edition broke DefWindowProc's implementation of WM_GETICON
+		// The icon doesn't always get set, so we return the icon ourselves now.
+		// Note that we still call WM_SETICON when changing the icons as that will put it in the caption bar.
+
+		// int dpi = lparam;
+		if (wparam == ICON_BIG)
+		{
+			return (LRESULT)LargeIcon;
+		}
+		else if (wparam == ICON_SMALL || wparam == ICON_SMALL2)
+		{
+			return (LRESULT)SmallIcon;
+		}
+	}
 	else if (msg == WM_CLOSE)
 	{
 		WindowHost->OnWindowClose();
@@ -716,26 +889,35 @@ LRESULT Win32DisplayWindow::OnWindowMessage(UINT msg, WPARAM wparam, LPARAM lpar
 
 void Win32DisplayWindow::UpdateCursor()
 {
-	LPCWSTR cursor = IDC_ARROW;
-	switch (CurrentCursor)
+	if (CurrentCustomCursor)
 	{
-	case StandardCursor::arrow: cursor = IDC_ARROW; break;
-	case StandardCursor::appstarting: cursor = IDC_APPSTARTING; break;
-	case StandardCursor::cross: cursor = IDC_CROSS; break;
-	case StandardCursor::hand: cursor = IDC_HAND; break;
-	case StandardCursor::ibeam: cursor = IDC_IBEAM; break;
-	case StandardCursor::no: cursor = IDC_NO; break;
-	case StandardCursor::size_all: cursor = IDC_SIZEALL; break;
-	case StandardCursor::size_nesw: cursor = IDC_SIZENESW; break;
-	case StandardCursor::size_ns: cursor = IDC_SIZENS; break;
-	case StandardCursor::size_nwse: cursor = IDC_SIZENWSE; break;
-	case StandardCursor::size_we: cursor = IDC_SIZEWE; break;
-	case StandardCursor::uparrow: cursor = IDC_UPARROW; break;
-	case StandardCursor::wait: cursor = IDC_WAIT; break;
-	default: break;
+		if (!CurrentWin32CustomCursor)
+			CurrentWin32CustomCursor = std::make_unique<Win32CustomCursor>(CurrentCustomCursor, GetDpiScale());
+		::SetCursor(CurrentWin32CustomCursor->handle);
 	}
+	else
+	{
+		LPCWSTR cursor = IDC_ARROW;
+		switch (CurrentCursor)
+		{
+		case StandardCursor::arrow: cursor = IDC_ARROW; break;
+		case StandardCursor::appstarting: cursor = IDC_APPSTARTING; break;
+		case StandardCursor::cross: cursor = IDC_CROSS; break;
+		case StandardCursor::hand: cursor = IDC_HAND; break;
+		case StandardCursor::ibeam: cursor = IDC_IBEAM; break;
+		case StandardCursor::no: cursor = IDC_NO; break;
+		case StandardCursor::size_all: cursor = IDC_SIZEALL; break;
+		case StandardCursor::size_nesw: cursor = IDC_SIZENESW; break;
+		case StandardCursor::size_ns: cursor = IDC_SIZENS; break;
+		case StandardCursor::size_nwse: cursor = IDC_SIZENWSE; break;
+		case StandardCursor::size_we: cursor = IDC_SIZEWE; break;
+		case StandardCursor::uparrow: cursor = IDC_UPARROW; break;
+		case StandardCursor::wait: cursor = IDC_WAIT; break;
+		default: break;
+		}
 
-	::SetCursor((HCURSOR)LoadImage(0, cursor, IMAGE_CURSOR, LR_DEFAULTSIZE, LR_DEFAULTSIZE, LR_SHARED));
+		::SetCursor((HCURSOR)LoadImage(0, cursor, IMAGE_CURSOR, LR_DEFAULTSIZE, LR_DEFAULTSIZE, LR_SHARED));
+	}
 }
 
 Point Win32DisplayWindow::GetLParamPos(LPARAM lparam) const
@@ -929,3 +1111,252 @@ std::list<Win32DisplayWindow*> Win32DisplayWindow::Windows;
 bool Win32DisplayWindow::ExitRunLoop;
 
 std::unordered_map<UINT_PTR, std::function<void()>> Win32DisplayWindow::Timers;
+
+/////////////////////////////////////////////////////////////////////////////
+
+Win32CustomCursor::Win32CustomCursor(const std::shared_ptr<CustomCursor>& cursor_description, double dpiscale)
+{
+	handle = create_cursor(cursor_description, dpiscale);
+}
+
+Win32CustomCursor::~Win32CustomCursor()
+{
+	if (handle)
+		DestroyCursor(handle);
+}
+
+HCURSOR Win32CustomCursor::create_cursor(const std::shared_ptr<CustomCursor>& cursor_description, double dpiscale)
+{
+	if (cursor_description->GetFrames().empty())
+		throw std::runtime_error("Cannot create cursor with no image frames");
+	std::vector<uint8_t> ani_file = create_ani_file(cursor_description);
+	int desired_width = (int)std::round(cursor_description->GetFrames().front().FrameImage->GetWidth() * dpiscale);
+	int desired_height = (int)std::round(cursor_description->GetFrames().front().FrameImage->GetHeight() * dpiscale);
+	HICON icon = CreateIconFromResourceEx((PBYTE)ani_file.data(), (DWORD)ani_file.size(), FALSE, 0x00030000, desired_width, desired_height, LR_DEFAULTCOLOR);
+	return (HCURSOR)icon;
+}
+
+std::vector<uint8_t> Win32CustomCursor::create_cur_file(const std::shared_ptr<Image>& image, const Point& hotspot)
+{
+	std::vector<std::shared_ptr<Image>> images;
+	std::vector<Point> hotspots;
+	images.push_back(image);
+	hotspots.push_back(hotspot);
+	return create_ico_helper(images, 2, hotspots);
+}
+
+static void writeCursorData(std::vector<uint8_t>& buf, const void *data, size_t size)
+{
+	auto p = static_cast<const uint8_t*>(data);
+	buf.insert(buf.end(), p, p + size);
+}
+
+std::vector<uint8_t> Win32CustomCursor::create_ico_helper(const std::vector<std::shared_ptr<Image>>& images, WORD type, const std::vector<Point>& hotspots)
+{
+	std::vector<uint8_t> buf;
+	buf.reserve(32 * 1024);
+
+	ICONHEADER header;
+	memset(&header, 0, sizeof(ICONHEADER));
+	header.idType = type;
+	header.idCount = (WORD)images.size();
+	writeCursorData(buf, &header, sizeof(ICONHEADER));
+
+	std::vector<std::shared_ptr<Image>> bmp_images;
+	for (auto& src_image : images)
+	{
+		// Convert pixel buffer to DIB compatible format:
+		int w = src_image->GetWidth();
+		int h = src_image->GetHeight();
+		auto bmp_image = Image::Create(w, h, ImageFormat::B8G8R8A8, nullptr);
+
+		// Cursor bitmaps use premultiplied alpha and is upside down:
+		const uint32_t* src = (const uint32_t*)src_image->GetData();
+		uint32_t* dest = (uint32_t*)bmp_image->GetData();
+
+		if (src_image->GetFormat() == ImageFormat::B8G8R8A8)
+		{
+			for (int y = 0; y < h; y++)
+			{
+				const uint32_t* srcline = src + y * w;
+				uint32_t* destline = dest + (h - 1 - y) * w;
+				for (int x = 0; x < w; x++)
+				{
+					uint32_t b = (srcline[x] & 0xff);
+					uint32_t g = ((srcline[x] >> 8) & 0xff);
+					uint32_t r = ((srcline[x] >> 16) & 0xff);
+					uint32_t a = ((srcline[x] >> 24) & 0xff);
+
+					r = r * a / 255;
+					g = g * a / 255;
+					b = b * a / 255;
+
+					destline[x] = (a << 24) + (r << 16) + (g << 8) + b;
+				}
+			}
+		}
+		else if (src_image->GetFormat() == ImageFormat::R8G8B8A8)
+		{
+			for (int y = 0; y < h; y++)
+			{
+				const uint32_t* srcline = src + y * w;
+				uint32_t* destline = dest + (h - 1 - y) * w;
+				for (int x = 0; x < w; x++)
+				{
+					uint32_t r = (srcline[x] & 0xff);
+					uint32_t g = ((srcline[x] >> 8) & 0xff);
+					uint32_t b = ((srcline[x] >> 16) & 0xff);
+					uint32_t a = ((srcline[x] >> 24) & 0xff);
+
+					r = r * a / 255;
+					g = g * a / 255;
+					b = b * a / 255;
+
+					destline[x] = (a << 24) + (r << 16) + (g << 8) + b;
+				}
+			}
+		}
+		else
+		{
+			throw std::runtime_error("Unsupported image format");
+		}
+
+		bmp_images.push_back(std::move(bmp_image));
+	}
+
+	for (size_t i = 0; i < bmp_images.size(); i++)
+	{
+		IconDirectoryEntry entry;
+		memset(&entry, 0, sizeof(IconDirectoryEntry));
+		entry.bWidth = bmp_images[i]->GetWidth();
+		entry.bHeight = bmp_images[i]->GetHeight();
+		entry.bColorCount = 0;
+		entry.wPlanes = 1;
+		entry.wBitCount = 32;
+		entry.dwBytesInRes = sizeof(BITMAPINFOHEADER) + bmp_images[i]->GetWidth() * bmp_images[i]->GetHeight() * 4;
+		entry.dwImageOffset = (DWORD)(size_header + size_direntry * bmp_images.size());
+		if (type == 2)
+		{
+			entry.XHotspot = (int)std::round(hotspots[i].x);
+			entry.YHotspot = (int)std::round(hotspots[i].y);
+		}
+		writeCursorData(buf, &entry, sizeof(IconDirectoryEntry));
+	}
+
+	for (size_t i = 0; i < bmp_images.size(); i++)
+	{
+		BITMAPINFOHEADER bmp_header;
+		memset(&bmp_header, 0, sizeof(BITMAPINFOHEADER));
+		bmp_header.biSize = sizeof(BITMAPINFOHEADER);
+		bmp_header.biWidth = bmp_images[i]->GetWidth();
+		bmp_header.biHeight = bmp_images[i]->GetHeight() * 2; // why on earth do I have to multiply this by two??
+		bmp_header.biPlanes = 1;
+		bmp_header.biBitCount = 32;
+		bmp_header.biCompression = BI_RGB;
+		bmp_header.biSizeImage = bmp_images[i]->GetWidth() * bmp_images[i]->GetHeight() * 4;
+		writeCursorData(buf, &bmp_header, sizeof(BITMAPINFOHEADER));
+		writeCursorData(buf, bmp_images[i]->GetData(), bmp_images[i]->GetWidth() * bmp_images[i]->GetHeight() * 4);
+	}
+
+	buf.shrink_to_fit();
+	return buf;
+}
+
+std::vector<uint8_t> Win32CustomCursor::create_ani_file(const std::shared_ptr<CustomCursor>& cursor_description)
+{
+	/*
+		"RIFF" {Length of File}
+		"ACON"
+		"LIST" {Length of List}
+		"INFO"
+		"INAM" {Length of Title} {Data}
+		"IART" {Length of Author} {Data}
+		"anih" {Length of ANI header (36 bytes)} {Data}   ; (see ANI Header TypeDef )
+		"rate" {Length of rate block} {Data}      ; ea. rate is a long (length is 1 to cSteps)
+		"seq " {Length of sequence block} {Data} ; ea. seq is a long (length is 1 to cSteps)
+		"LIST" {Length of List}
+		"fram"
+		"icon" {Length of Icon} {Data}      ; 1st in list
+		...
+		"icon" {Length of Icon} {Data}      ; Last in list  (1 to cFrames)
+	*/
+
+	ANIFrames ani_frames;
+	std::vector<DWORD> rates;
+	std::vector<DWORD> steps;
+
+	const std::vector<CustomCursorFrame>& frames = cursor_description->GetFrames();
+	for (std::vector<CustomCursorFrame>::size_type i = 0; i < frames.size(); i++)
+	{
+		ani_frames.icons.push_back(create_cur_file(frames[i].FrameImage, cursor_description->GetHotspot()));
+		DWORD rate = static_cast<DWORD>(std::round(frames[i].FrameDuration * 60.0));
+		if (rate == 0)
+			rate = 1;
+		rates.push_back(rate);
+		steps.push_back((DWORD)i);
+	}
+
+	ANIHeader ani_header;
+	memset(&ani_header, 0, sizeof(ANIHeader));
+	ani_header.cbSizeOf = sizeof(ANIHeader);
+	ani_header.flags = AF_ICON;
+	ani_header.JifRate = 30;
+	ani_header.cBitCount = 32;
+	ani_header.cPlanes = 1;
+	ani_header.cFrames = (DWORD)ani_frames.icons.size();
+	ani_header.cSteps = (DWORD)steps.size();
+	ani_header.cx = (int)std::round(cursor_description->GetHotspot().x);
+	ani_header.cy = (int)std::round(cursor_description->GetHotspot().y);
+
+	ANIInfo ani_info;
+	ani_info.author = "zwidget";
+	ani_info.title = "zwidget";
+
+	int size_file_header = 8 + 4;
+	int size_list1 = 8 + ani_info.length();
+	int size_anih = 8 + sizeof(ANIHeader);
+	int size_rate = 8 + ani_header.cSteps * 4;
+	int size_seq = 8 + ani_header.cSteps * 4;
+	int size_list2 = 8 + ani_frames.length();
+	int size = size_file_header + size_list1 + size_anih + size_rate + size_seq + size_list2;
+
+	std::vector<uint8_t> ani_file(size);
+	uint8_t* data = ani_file.data();
+
+	set_riff_header(data, "RIFF", size);
+	memcpy(data + 8, "ACON", 4);
+	data += size_file_header;
+
+	set_riff_header(data, "LIST", size_list1);
+	ani_info.write(data + 8);
+	data += size_list1;
+
+	set_riff_header(data, "anih", size_anih);
+	memcpy(data + 8, &ani_header, sizeof(ANIHeader));
+	data += size_anih;
+
+	set_riff_header(data, "rate", size_rate);
+	DWORD* rate = (DWORD*)(data + 8);
+	for (DWORD i = 0; i < ani_header.cSteps; i++)
+		rate[i] = rates[i];
+	data += size_rate;
+
+	set_riff_header(data, "seq ", size_seq);
+	DWORD* seq = (DWORD*)(data + 8);
+	for (DWORD i = 0; i < ani_header.cSteps; i++)
+		seq[i] = steps[i];
+	data += size_rate;
+
+	set_riff_header(data, "LIST", size_list2);
+	ani_frames.write(data + 8);
+	data += size_list2;
+
+	return ani_file;
+}
+
+void Win32CustomCursor::set_riff_header(uint8_t* data, const char* type, DWORD size)
+{
+	memcpy(data, type, 4);
+	DWORD* s = (DWORD*)(data + 4);
+	*s = size - 8;
+}
