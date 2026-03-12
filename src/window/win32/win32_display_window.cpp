@@ -271,6 +271,12 @@ void Win32DisplayWindow::Show()
 	ShowWindow(WindowHandle.hwnd, PopupWindow ? SW_SHOWNA : SW_SHOW);
 }
 
+
+void Win32DisplayWindow::Restore()
+{
+	ShowWindow(WindowHandle.hwnd, SW_RESTORE);
+}
+
 void Win32DisplayWindow::ShowFullscreen()
 {
 	HDC screenDC = GetDC(0);

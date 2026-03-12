@@ -114,6 +114,11 @@ void SDL2DisplayWindow::Show()
 	SDL_ShowWindow(Handle.window);
 }
 
+void SDL2DisplayWindow::Restore()
+{
+	SDL_RestoreWindow(Handle.window);
+}
+
 void SDL2DisplayWindow::ShowFullscreen()
 {
 	SDL_ShowWindow(Handle.window);

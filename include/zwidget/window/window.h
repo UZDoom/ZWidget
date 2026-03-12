@@ -168,6 +168,7 @@ public:
 	virtual void SetWindowFrame(const Rect& box) = 0;
 	virtual void SetClientFrame(const Rect& box) = 0;
 	virtual void Show() = 0;
+	virtual void Restore() = 0;
 	virtual void ShowFullscreen() = 0;
 	virtual void ShowMaximized() = 0;
 	virtual void ShowMinimized() = 0;
