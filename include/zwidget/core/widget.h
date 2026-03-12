@@ -31,7 +31,7 @@ enum class WidgetEvent
 class Widget : DisplayWindowHost
 {
 public:
-	Widget(Widget* parent = nullptr, WidgetType type = WidgetType::Child, RenderAPI api = RenderAPI::Unspecified);
+	Widget(Widget* parent = nullptr, WidgetType type = WidgetType::Child, RenderAPI api = RenderAPI::Unspecified, bool windowResizable = true);
 	virtual ~Widget();
 
 	void SetParent(Widget* parent);

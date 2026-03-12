@@ -6,12 +6,12 @@
 #include <cmath>
 #include <algorithm>
 
-Widget::Widget(Widget* parent, WidgetType type, RenderAPI renderAPI) : Type(type)
+Widget::Widget(Widget* parent, WidgetType type, RenderAPI renderAPI, bool windowResizable) : Type(type)
 {
 	if (type != WidgetType::Child)
 	{
 		Widget* owner = parent ? parent->Window() : nullptr;
-		DispWindow = DisplayWindow::Create(this, type == WidgetType::Popup, owner ? owner->DispWindow.get() : nullptr, renderAPI);
+		DispWindow = DisplayWindow::Create(this, type == WidgetType::Popup, owner ? owner->DispWindow.get() : nullptr, renderAPI, windowResizable);
 		if (renderAPI == RenderAPI::Unspecified || renderAPI == RenderAPI::Bitmap)
 		{
 			DispCanvas = Canvas::create();
