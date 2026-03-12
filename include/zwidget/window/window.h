@@ -217,8 +217,6 @@ public:
 
 	static std::unique_ptr<DisplayBackend> TryCreateWin32();
 	static std::unique_ptr<DisplayBackend> TryCreateSDL2();
-	static std::unique_ptr<DisplayBackend> TryCreateX11();
-	static std::unique_ptr<DisplayBackend> TryCreateWayland();
 
 	static std::unique_ptr<DisplayBackend> TryCreateBackend();
 
@@ -226,8 +224,6 @@ public:
 
 	virtual bool IsWin32() { return false; }
 	virtual bool IsSDL2() { return false; }
-	virtual bool IsX11() { return false; }
-	virtual bool IsWayland() { return false; }
 
 	virtual std::unique_ptr<DisplayWindow> Create(DisplayWindowHost* windowHost, bool popupWindow, DisplayWindow* owner, RenderAPI renderAPI) = 0;
 	virtual void ProcessEvents() = 0;
