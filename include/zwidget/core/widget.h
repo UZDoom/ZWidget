@@ -130,15 +130,15 @@ public:
 	void SetPointerCapture();
 	void ReleasePointerCapture();
 
-	void SetModalCapture();
-	void ReleaseModalCapture();
+	void SetModalCapture(bool rootWindow = false);
+	void ReleaseModalCapture(bool rootWindow = false);
 
 	bool GetKeyState(InputKey key);
 
 	std::string GetClipboardText();
 	void SetClipboardText(const std::string& text);
 
-	Widget* Window() const;
+	Widget* Window(bool rootWindow = false) const;
 	Canvas* GetCanvas() const;
 	Widget* ChildAt(double x, double y) { return ChildAt(Point(x, y)); }
 	Widget* ChildAt(const Point& pos);
